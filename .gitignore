@@ -1,0 +1,6 @@
+/client/node_modules
+client/resources/pepe-service.exe
+/service/build
+/service/dist
+/client/dist-electron
+/client/dist

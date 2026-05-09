@@ -1,0 +1,64 @@
+{
+  "name": "pepe",
+  "version": "1.0.0",
+  "description": "Network Debugging Client — HTTP debugger desktop app",
+  "main": "electron.cjs",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "build": "vite build",
+    "preview": "vite preview",
+    "electron": "electron .",
+    "dist": "vite build && electron-builder"
+  },
+  "dependencies": {
+    "lucide-react": "^0.378.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "concurrently": "^8.2.2",
+    "electron": "^30.0.6",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.2.11",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.pepe.client",
+    "productName": "PEPE",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "dist/**/*",
+      "electron.cjs",
+      "electron-preload.cjs",
+      "resources/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/pepe-service.exe",
+        "to": "."
+      }
+    ],
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "portable", "arch": ["x64"] }
+      ],
+      "icon": "resources/pepe.ico",
+      "executableName": "PEPE"
+    },
+    "nsis": {
+      "installerIcon": "resources/pepe.ico",
+      "installerHeaderIcon": "resources/pepe.ico",
+      "shortcutName": "PEPE",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": "dmg",
+      "icon": "resources/pepe.ico"
+    }
+  }
+}
