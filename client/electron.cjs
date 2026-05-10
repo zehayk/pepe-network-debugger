@@ -1,8 +1,8 @@
-const { app, BrowserWindow, ipcMain, shell } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron')
 const path = require('path')
 const os = require('os')
 const http = require('http')
-const { exec: _exec, spawn } = require('child_process')
+const { exec: _exec, spawn, spawnSync } = require('child_process')
 const { promisify } = require('util')
 
 const execAsync = promisify(_exec)
@@ -22,6 +22,37 @@ function checkDevServer() {
     const req = http.get(DEV_URL, () => resolve(true))
     req.on('error', () => resolve(false))
     req.setTimeout(500, () => { req.destroy(); resolve(false) })
+  })
+}
+
+function isRunningAsAdmin() {
+  if (process.platform !== 'win32') return true
+
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-WindowStyle', 'Hidden',
+    '-Command',
+    '[bool]([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)',
+  ], {
+    encoding: 'utf8',
+    windowsHide: true,
+  })
+
+  if (result.error) return false
+  return String(result.stdout || '').trim().toLowerCase() === 'true'
+}
+
+async function warnIfNotAdmin() {
+  if (process.platform !== 'win32' || isRunningAsAdmin()) return
+
+  await dialog.showMessageBox({
+    type: 'warning',
+    buttons: ['OK'],
+    defaultId: 0,
+    title: 'Administrator Required',
+    message: 'PEPE is not running as Administrator.',
+    detail: 'Some capture and service features require elevated privileges. Close the app and reopen it using "Run as administrator" for full functionality.',
   })
 }
 
@@ -172,7 +203,8 @@ ipcMain.handle('service-run-interactive', async () => {
 
 // ── App lifecycle ──────────────────────────────────────────────────────────
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  await warnIfNotAdmin()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
