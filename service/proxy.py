@@ -25,17 +25,16 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 8080
 
 
-from pathlib import Path
-from mitmproxy.certs import CertStore
-
-confdir = Path.home() / ".mitmproxy"
-
-# Creates ~/.mitmproxy and the CA files if they are missing.
-store = CertStore.from_store(confdir, "mitmproxy", 2048)
-
-print("Created or loaded:", confdir)
-print("CA file exists:", (confdir / "mitmproxy-ca.pem").exists())
-print("Cert file exists:", (confdir / "mitmproxy-ca-cert.pem").exists())
+def _log_proxy_error(msg: str):
+    try:
+        from pathlib import Path
+        import datetime
+        log = Path("C:/ProgramData/PEPE/pepe-service.log")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().isoformat()}] [proxy] {msg}\n")
+    except Exception:
+        pass
 
 
 class LiveFlowAddon:
@@ -411,7 +410,9 @@ class ProxyRunner:
             try:
                 asyncio.run(self._run_async())
             except Exception as e:
+                import traceback
                 self._error = str(e)
+                _log_proxy_error(traceback.format_exc())
                 state.broadcast_queue.put({"type": "proxy_error", "message": str(e)})
 
         self.thread = threading.Thread(target=runner, daemon=True, name="pepe-proxy")

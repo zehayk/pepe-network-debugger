@@ -17,4 +17,5 @@ contextBridge.exposeInMainWorld('electron', {
   serviceStop: () => ipcRenderer.invoke('service-stop'),
   serviceUninstall: () => ipcRenderer.invoke('service-uninstall'),
   serviceRunInteractive: () => ipcRenderer.invoke('service-run-interactive'),
+  notifyProxyChange: () => ipcRenderer.invoke('notify-proxy-change'),
 })

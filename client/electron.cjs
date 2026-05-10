@@ -191,6 +191,22 @@ ipcMain.handle('service-uninstall', async () => {
   await runElevated(cmd)
 })
 
+// Notify WinINet of proxy settings change from the USER's session.
+// The SYSTEM service writes the correct registry keys but can't send
+// cross-session notifications (Session 0 isolation).
+ipcMain.handle('notify-proxy-change', async () => {
+  try {
+    await execAsync(
+      'powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -Command "' +
+      "Add-Type -TypeDefinition 'using System.Runtime.InteropServices; " +
+      'public class WI { [DllImport(\\"wininet.dll\\")] ' +
+      'public static extern bool InternetSetOption(System.IntPtr h, int o, System.IntPtr b, int l); }\'; ' +
+      '[WI]::InternetSetOption([System.IntPtr]::Zero,39,[System.IntPtr]::Zero,0); ' +
+      '[WI]::InternetSetOption([System.IntPtr]::Zero,37,[System.IntPtr]::Zero,0)"'
+    )
+  } catch { /* best-effort */ }
+})
+
 ipcMain.handle('service-run-interactive', async () => {
   const exe = serviceExePath()
   const child = spawn(exe, ['--interactive'], {

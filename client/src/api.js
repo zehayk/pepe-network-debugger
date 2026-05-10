@@ -74,8 +74,15 @@ export const updateSettings = (settings) => req('POST', '/api/settings', setting
 
 // ── Windows proxy ─────────────────────────────────────────────────────────────
 export const getWinProxy = () => req('GET', '/api/proxy/win-proxy')
-export const setWinProxy = (enabled, server = '127.0.0.1:8080') =>
-  req('POST', '/api/proxy/win-proxy', { enabled, server })
+export const setWinProxy = async (enabled, server = '127.0.0.1:8080') => {
+  const result = await req('POST', '/api/proxy/win-proxy', { enabled, server })
+  // The service may run as SYSTEM (Session 0) which can't send WinINet
+  // notifications to the user's session.  Trigger it from here instead.
+  if (window.electron?.notifyProxyChange) {
+    window.electron.notifyProxyChange().catch(() => {})
+  }
+  return result
+}
 
 // ── Packet capture ────────────────────────────────────────────────────────────
 export const getInterfaces = () => req('GET', '/api/capture/interfaces')

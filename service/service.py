@@ -49,6 +49,27 @@ def run_server():
     t = threading.Thread(target=_server.run, daemon=True, name="pepe-api")
     t.start()
 
+    # Give threads a moment to fail, then verify they're alive
+    time.sleep(1)
+    proxy_ok = _runner.thread is not None and _runner.thread.is_alive()
+    api_ok = t.is_alive()
+    _service_log(f"Startup check: proxy_thread_alive={proxy_ok}  api_thread_alive={api_ok}")
+    if _runner.error:
+        _service_log(f"Proxy error on start: {_runner.error}")
+
+
+def _service_log(msg: str):
+    """Write a diagnostic line to the shared service log."""
+    try:
+        from pathlib import Path
+        import datetime
+        log = Path("C:/ProgramData/PEPE/pepe-service.log")
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"[{datetime.datetime.now().isoformat()}] {msg}\n")
+    except Exception:
+        pass
+
 
 def stop_server():
     """Signal server threads to shut down."""

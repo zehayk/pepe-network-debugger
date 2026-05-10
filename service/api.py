@@ -141,10 +141,12 @@ async def websocket_endpoint(ws: WebSocket):
 def get_status():
     host = state.settings_store.get("proxy_listen_host", "127.0.0.1")
     port = state.settings_store.get("proxy_listen_port", 8080)
+    proxy_error = state.proxy_runner.error if state.proxy_runner else None
     return {
         "status": "running",
         "proxy": f"{host}:{port}",
         "flows": len(state.flow_store.all()),
+        "proxy_error": proxy_error,
     }
 
 

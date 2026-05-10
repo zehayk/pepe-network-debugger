@@ -4,7 +4,10 @@ from pathlib import Path
 
 
 class SettingsStore:
-    _SAVE_PATH = Path.home() / ".pepe" / "settings.json"
+    # Use a shared location so settings are consistent whether running
+    # interactively or as a SYSTEM service (Path.home() under SYSTEM
+    # resolves to the SYSTEM profile, not the logged-in user's home).
+    _SAVE_PATH = Path("C:/ProgramData/PEPE/settings.json")
 
     _DEFAULTS = {
         "stream_only": True,
