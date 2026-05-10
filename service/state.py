@@ -4,6 +4,7 @@ import queue
 from stores import FlowStore, OverrideStore, RequestOverrideStore, BlockStore, BypassStore
 from settings import SettingsStore
 from amqp_capture import AMQPCaptureRunner
+from packet_capture import PacketCaptureRunner
 
 flow_store = FlowStore()
 resp_override_store = OverrideStore()
@@ -12,6 +13,7 @@ block_store = BlockStore()
 bypass_store = BypassStore()
 settings_store = SettingsStore()
 amqp_runner = AMQPCaptureRunner()
+packet_runner = PacketCaptureRunner()
 
 # mitmproxy posts {"type": ..., ...} here; api.py drains and broadcasts to WS clients
 broadcast_queue: queue.Queue = queue.Queue()

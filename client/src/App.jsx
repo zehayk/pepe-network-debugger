@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import { useWebSocket } from './hooks/useWebSocket.js'
 import TitleBar from './components/TitleBar.jsx'
 import Toolbar from './components/Toolbar.jsx'
@@ -7,15 +7,24 @@ import FlowTable from './components/FlowTable.jsx'
 import FlowDetail from './components/FlowDetail.jsx'
 import RulesPanel from './components/RulesPanel.jsx'
 import SettingsPanel from './components/SettingsPanel.jsx'
+import TrafficGraph from './components/TrafficGraph.jsx'
+import StreamsTable from './components/StreamsTable.jsx'
+import StreamDetail from './components/StreamDetail.jsx'
+import PacketsTable from './components/PacketsTable.jsx'
+import PacketDetail from './components/PacketDetail.jsx'
 import OverrideResponseDialog from './components/dialogs/OverrideResponseDialog.jsx'
 import OverrideRequestDialog from './components/dialogs/OverrideRequestDialog.jsx'
 import BlockDialog from './components/dialogs/BlockDialog.jsx'
+import ProxyConfigDialog from './components/dialogs/ProxyConfigDialog.jsx'
 import SendDialog from './components/dialogs/SendDialog.jsx'
 import CloseConfirmDialog from './components/dialogs/CloseConfirmDialog.jsx'
 import ContextMenu from './components/ContextMenu.jsx'
 import * as api from './api.js'
 
 // ── State ─────────────────────────────────────────────────────────────────────
+
+const MAX_FLOWS = 5000
+const MAX_PACKETS = 5000
 
 const initialState = {
   flows: {},        // id → flow
@@ -24,7 +33,7 @@ const initialState = {
   reqOverrides: [],
   blocks: [],
   bypass: [],
-  settings: { stream_only: true, target_mode: false },
+  settings: { stream_only: true, target_mode: false, proxy_listen_host: '127.0.0.1', proxy_listen_port: 8080 },
 }
 
 function reducer(state, action) {
@@ -38,6 +47,21 @@ function reducer(state, action) {
         order: exists ? state.order : [...state.order, flow.id],
       }
     }
+    case 'UPSERT_BATCH': {
+      const incoming = action.flows
+      const flows = { ...state.flows }
+      const order = [...state.order]
+      for (const flow of incoming) {
+        if (!(flow.id in flows)) order.push(flow.id)
+        flows[flow.id] = flow
+      }
+      if (order.length > MAX_FLOWS) {
+        const removed = order.splice(0, order.length - MAX_FLOWS)
+        for (const id of removed) delete flows[id]
+      }
+      return { ...state, flows, order }
+    }
+
     case 'CLEAR':
       return { ...state, flows: {}, order: [] }
 
@@ -107,13 +131,39 @@ export default function App() {
   const [regexMode, setRegexMode] = useState(false)
   const [errorsOnly, setErrorsOnly] = useState(false)
   const [autoScroll, setAutoScroll] = useState(true)
-  const [rightTab, setRightTab] = useState('details') // 'details' | 'rules'
+  const [leftTab, setLeftTab] = useState('http')      // 'http' | 'streams' | 'raw'
+  const [showGraph, setShowGraph] = useState(true)
+  const [showRules, setShowRules] = useState(false)
+  const [showProxy, setShowProxy] = useState(false)
   const [dialog, setDialog] = useState(null) // { type, data, override? }
   const [ctxMenu, setCtxMenu] = useState(null) // { x, y, flow }
   const [showSettings, setShowSettings] = useState(false)
   const [showClose, setShowClose] = useState(false)
   const splitRef = useRef(null)
+  const pendingFlows = useRef([])
+  const flushTimer = useRef(null)
   const [leftWidth, setLeftWidth] = useState(650)
+  const [winProxy, setWinProxy] = useState(null)
+
+  // Pause / time-range state
+  const pausedRef = useRef(false)
+  const [paused, setPaused] = useState(false)
+  const [pauseEvents, setPauseEvents] = useState([]) // [{at: unixSec, type: 'pause'|'resume'}]
+  const [timeRange, setTimeRange] = useState(null)   // null | {start, end} in unix seconds
+
+  // WebSocket / stream state (also used for gRPC)
+  const [wsConns, setWsConns] = useState({})   // id → conn
+  const [wsOrder, setWsOrder] = useState([])   // [id, ...]
+  const [wsMsgs, setWsMsgs] = useState({})     // id → [msg, ...]
+  const [selectedStreamId, setSelectedStreamId] = useState(null)
+
+  // Raw packet capture state
+  const [packets, setPackets] = useState([])
+  const [selectedPacketNo, setSelectedPacketNo] = useState(null)
+  const [captureRunning, setCaptureRunning] = useState(false)
+  const [captureError, setCaptureError] = useState(null)
+  const pktPendingRef = useRef([])
+  const pktFlushTimerRef = useRef(null)
 
   const selectedFlow = selectedId ? state.flows[selectedId] : null
 
@@ -125,14 +175,55 @@ export default function App() {
     el.onRequestClose(() => setShowClose(true))
   }, [])
 
+  useEffect(() => {
+    api.getWinProxy().then(setWinProxy).catch(() => {})
+  }, [])
+
+  const applyProxy = async (host, port, winEnabled) => {
+    const addr = `${host}:${port}`
+    // Always send listen address — backend only restarts mitmproxy if values actually changed
+    try {
+      await api.updateSettings({ proxy_listen_host: host, proxy_listen_port: parseInt(port) })
+    } catch {}
+    // Always update Windows system proxy, then re-fetch real state from backend
+    try {
+      await api.setWinProxy(winEnabled, addr)
+    } catch {}
+    try {
+      const actual = await api.getWinProxy()
+      setWinProxy(actual)
+    } catch {}
+  }
+
   // ── WebSocket ─────────────────────────────────────────────────────────────────
 
   const handleWsMessage = useCallback((msg) => {
     if (msg.type === 'connected') { setConnected(true); return }
     if (msg.type === 'disconnected') { setConnected(false); return }
-    if (msg.type === 'upsert') { dispatch({ type: 'UPSERT', flow: msg.flow }); return }
-    if (msg.type === 'clear') { dispatch({ type: 'CLEAR' }); return }
+    if (msg.type === 'upsert') {
+      if (!pausedRef.current) {
+        pendingFlows.current.push(msg.flow)
+        if (!flushTimer.current) {
+          flushTimer.current = setTimeout(() => {
+            dispatch({ type: 'UPSERT_BATCH', flows: pendingFlows.current })
+            pendingFlows.current = []
+            flushTimer.current = null
+          }, 50)
+        }
+      }
+      return
+    }
+    if (msg.type === 'clear') {
+      if (flushTimer.current) { clearTimeout(flushTimer.current); flushTimer.current = null }
+      pendingFlows.current = []
+      dispatch({ type: 'CLEAR' })
+      setPauseEvents([])
+      setTimeRange(null)
+      return
+    }
     if (msg.type === 'snapshot') {
+      if (flushTimer.current) { clearTimeout(flushTimer.current); flushTimer.current = null }
+      pendingFlows.current = []
       dispatch({
         type: 'SNAPSHOT',
         flows: msg.flows,
@@ -142,6 +233,72 @@ export default function App() {
         bypass: msg.bypass,
         settings: msg.settings,
       })
+      setPauseEvents([])
+      setTimeRange(null)
+      setWsConns({})
+      setWsOrder([])
+      setWsMsgs({})
+      setPackets([])
+      setSelectedPacketNo(null)
+      return
+    }
+    if (msg.type === 'ws_start' || msg.type === 'grpc_start') {
+      setWsConns(c => ({ ...c, [msg.conn.id]: msg.conn }))
+      setWsOrder(o => o.includes(msg.conn.id) ? o : [...o, msg.conn.id])
+      return
+    }
+    if (msg.type === 'ws_message' || msg.type === 'grpc_frame') {
+      setWsConns(c => {
+        const conn = c[msg.conn_id]
+        if (!conn) return c
+        return { ...c, [msg.conn_id]: { ...conn, msg_count: msg.msg_count } }
+      })
+      setWsMsgs(m => {
+        const existing = m[msg.conn_id] ?? []
+        const capped = existing.length >= 1000 ? existing.slice(1) : existing
+        const raw = msg.msg
+        const prettyContent = raw.kind === 'base64'
+          ? `[protobuf/binary ${raw.size ?? 0} B]\n${raw.content}`
+          : raw.kind === 'binary' ? '[binary data]' : (() => {
+              if (!raw.content) return ''
+              try { return JSON.stringify(JSON.parse(raw.content), null, 2) } catch { return raw.content }
+            })()
+        return { ...m, [msg.conn_id]: [...capped, { ...raw, prettyContent }] }
+      })
+      return
+    }
+    if (msg.type === 'ws_end' || msg.type === 'grpc_end') {
+      setWsConns(c => {
+        const conn = c[msg.conn_id]
+        if (!conn) return c
+        return { ...c, [msg.conn_id]: { ...conn, status: msg.status } }
+      })
+      return
+    }
+    if (msg.type === 'raw_packets') {
+      if (!pausedRef.current) {
+        pktPendingRef.current.push(...msg.packets)
+        if (!pktFlushTimerRef.current) {
+          pktFlushTimerRef.current = setTimeout(() => {
+            const batch = pktPendingRef.current
+            pktPendingRef.current = []
+            pktFlushTimerRef.current = null
+            setPackets(prev => {
+              const combined = [...prev, ...batch]
+              return combined.length > MAX_PACKETS ? combined.slice(-MAX_PACKETS) : combined
+            })
+          }, 50)
+        }
+      }
+      return
+    }
+    if (msg.type === 'capture_error') {
+      setCaptureError(msg.message)
+      setCaptureRunning(false)
+      return
+    }
+    if (msg.type === 'capture_stopped') {
+      setCaptureRunning(false)
       return
     }
     if (msg.type === 'rules') {
@@ -159,21 +316,68 @@ export default function App() {
       dispatch({ type: 'SET_SETTINGS', settings })
       return
     }
-  }, [])
+    if (msg.type === 'proxy_restarted') {
+      dispatch({ type: 'SET_SETTINGS', settings: { proxy_listen_host: msg.host, proxy_listen_port: msg.port } })
+      return
+    }
+  }, []) // pausedRef is stable, no deps needed
 
   useWebSocket(handleWsMessage)
 
   // ── Derived ───────────────────────────────────────────────────────────────────
 
-  const visibleFlows = state.order
-    .map(id => state.flows[id])
-    .filter(f => f && flowVisible(f, filter, errorsOnly, regexMode))
+  // Stable reference for graph (timestamps don't change after first UPSERT)
+  const allFlows = useMemo(
+    () => state.order.map(id => state.flows[id]).filter(Boolean),
+    [state.order] // eslint-disable-line react-hooks/exhaustive-deps
+  )
+
+  // Fresh reference for FlowTable (needs latest status_code, duration_ms, etc.)
+  const visibleFlows = useMemo(() => {
+    let flows = state.order
+      .map(id => state.flows[id])
+      .filter(f => f && flowVisible(f, filter, errorsOnly, regexMode))
+    if (timeRange) {
+      flows = flows.filter(f => {
+        const ts = f.time ? new Date(f.time).getTime() / 1000 : 0
+        return ts >= timeRange.start && ts <= timeRange.end
+      })
+    }
+    return flows
+  }, [state.order, state.flows, filter, errorsOnly, regexMode, timeRange])
 
   // ── Actions ───────────────────────────────────────────────────────────────────
 
+  const clearHttp = () => api.clearFlows().catch(() => {})
+
+  const clearStreams = () => {
+    setWsConns({})
+    setWsOrder([])
+    setWsMsgs({})
+    setSelectedStreamId(null)
+  }
+
+  const clearRaw = () => {
+    if (pktFlushTimerRef.current) { clearTimeout(pktFlushTimerRef.current); pktFlushTimerRef.current = null }
+    pktPendingRef.current = []
+    setPackets([])
+    setSelectedPacketNo(null)
+  }
+
   const clearAll = async () => {
-    await api.clearFlows()
-    dispatch({ type: 'CLEAR' })
+    clearStreams()
+    clearRaw()
+    setPauseEvents([])
+    setTimeRange(null)
+    await clearHttp()
+  }
+
+  const togglePause = () => {
+    const now = Date.now() / 1000
+    const newPaused = !pausedRef.current
+    pausedRef.current = newPaused
+    setPaused(newPaused)
+    setPauseEvents(evs => [...evs, { at: now, type: newPaused ? 'pause' : 'resume' }])
   }
 
   const openRespOverride = (flow) => {
@@ -303,19 +507,51 @@ export default function App() {
     document.addEventListener('mouseup', onUp)
   }
 
+  // ── Packet capture ────────────────────────────────────────────────────────────
+
+  const startCapture = async (iface, filter) => {
+    setCaptureError(null)
+    try {
+      const r = await api.startCapture(iface, filter)
+      if (r.ok) {
+        setCaptureRunning(true)
+      } else {
+        setCaptureError(r.error || 'Failed to start capture')
+      }
+    } catch (e) {
+      setCaptureError(e.message)
+    }
+  }
+
+  const stopCapture = async () => {
+    try { await api.stopCapture() } catch {}
+    setCaptureRunning(false)
+  }
+
   // ── Copy proxy ────────────────────────────────────────────────────────────────
 
   const copyProxy = () => {
-    navigator.clipboard.writeText('127.0.0.1:8080')
+    const addr = `${state.settings.proxy_listen_host || '127.0.0.1'}:${state.settings.proxy_listen_port || 8080}`
+    navigator.clipboard.writeText(addr)
   }
 
   // ── Render ────────────────────────────────────────────────────────────────────
 
   return (
     <div className="app" onClick={closeCtxMenu}>
-      <TitleBar connected={connected} />
+      <TitleBar
+        connected={connected}
+        proxyAddr={`${state.settings.proxy_listen_host || '127.0.0.1'}:${state.settings.proxy_listen_port || 8080}`}
+        winProxyEnabled={winProxy?.enabled ?? false}
+      />
       <Toolbar
         selectedFlow={selectedFlow}
+        paused={paused}
+        onTogglePause={togglePause}
+        showGraph={showGraph}
+        onToggleGraph={() => setShowGraph(g => !g)}
+        onRules={() => setShowRules(true)}
+        onProxy={() => setShowProxy(true)}
         onReplay={() => replay(selectedFlow)}
         onEditSend={() => openSend(selectedFlow)}
         onRespOverride={() => openRespOverride(selectedFlow)}
@@ -324,6 +560,7 @@ export default function App() {
         onBlockHost={() => openBlock(selectedFlow, 'host')}
         onBlockUrl={() => openBlock(selectedFlow, 'url')}
         onBlockProcess={() => openBlock(selectedFlow, 'process')}
+        onBlockIp={() => openBlock(selectedFlow, 'ip')}
         onAddBlock={() => setDialog({ type: 'block', data: { flow: null, kind: 'host' } })}
         onClearBlocks={() => api.clearBlocks()}
         onClear={clearAll}
@@ -347,15 +584,69 @@ export default function App() {
 
       <div className="main-split" ref={splitRef}>
         <div className="split-left" style={{ width: leftWidth, flexShrink: 0 }}>
-          <FlowTable
-            flows={visibleFlows}
-            selectedId={selectedId}
-            onSelect={setSelectedId}
-            onContextMenu={handleCtxMenu}
-            autoScroll={autoScroll}
-            respOverrides={state.respOverrides}
-            reqOverrides={state.reqOverrides}
-          />
+          <div className="left-sub-tabs">
+            <button
+              className={`left-sub-tab ${leftTab === 'http' ? 'left-sub-tab--active' : ''}`}
+              onClick={() => setLeftTab('http')}
+            >HTTP</button>
+            <button
+              className={`left-sub-tab ${leftTab === 'streams' ? 'left-sub-tab--active' : ''}`}
+              onClick={() => setLeftTab('streams')}
+            >
+              Streams
+              {wsOrder.length > 0 && <span className="left-sub-tab__count">{wsOrder.length}</span>}
+            </button>
+            <button
+              className={`left-sub-tab ${leftTab === 'raw' ? 'left-sub-tab--active' : ''}`}
+              onClick={() => setLeftTab('raw')}
+            >
+              Raw
+              {captureRunning && <span className="left-sub-tab__count" style={{ color: 'var(--error)', background: 'color-mix(in srgb, var(--error) 15%, transparent)' }}>●</span>}
+            </button>
+          </div>
+
+          {leftTab === 'http' && showGraph && (
+            <TrafficGraph
+              allFlows={allFlows}
+              pauseEvents={pauseEvents}
+              paused={paused}
+              timeRange={timeRange}
+              onTimeSelect={setTimeRange}
+            />
+          )}
+          {leftTab === 'http' && (
+            <FlowTable
+              flows={visibleFlows}
+              selectedId={selectedId}
+              onSelect={setSelectedId}
+              onContextMenu={handleCtxMenu}
+              autoScroll={autoScroll}
+              pauseEvents={pauseEvents}
+              onClear={clearHttp}
+            />
+          )}
+          {leftTab === 'streams' && (
+            <StreamsTable
+              conns={wsConns}
+              order={wsOrder}
+              selectedId={selectedStreamId}
+              onSelect={setSelectedStreamId}
+              autoScroll={autoScroll}
+              onClear={clearStreams}
+            />
+          )}
+          {leftTab === 'raw' && (
+            <PacketsTable
+              packets={packets}
+              selectedNo={selectedPacketNo}
+              onSelect={setSelectedPacketNo}
+              captureRunning={captureRunning}
+              onStart={startCapture}
+              onStop={stopCapture}
+              captureError={captureError}
+              onClear={clearRaw}
+            />
+          )}
         </div>
 
         <div
@@ -365,46 +656,16 @@ export default function App() {
         />
 
         <div className="split-right">
-          <div className="tab-bar">
-            <button
-              className={`tab-bar__tab ${rightTab === 'details' ? 'tab-bar__tab--active' : ''}`}
-              onClick={() => setRightTab('details')}
-            >Details</button>
-            <button
-              className={`tab-bar__tab ${rightTab === 'rules' ? 'tab-bar__tab--active' : ''}`}
-              onClick={() => setRightTab('rules')}
-            >Rules</button>
-          </div>
-
-          {rightTab === 'details' && (
-            <FlowDetail flow={selectedFlow} />
+          {leftTab === 'http' && <FlowDetail flow={selectedFlow} />}
+          {leftTab === 'streams' && (
+            <StreamDetail
+              conn={wsConns[selectedStreamId] ?? null}
+              messages={wsMsgs[selectedStreamId] ?? []}
+            />
           )}
-
-          {rightTab === 'rules' && (
-            <RulesPanel
-              respOverrides={state.respOverrides}
-              reqOverrides={state.reqOverrides}
-              blocks={state.blocks}
-              bypass={state.bypass}
-              onToggleResp={(sig) => api.toggleRespOverride(sig)}
-              onRemoveResp={(sig) => api.removeRespOverride(sig)}
-              onToggleReq={(sig) => api.toggleReqOverride(sig)}
-              onRemoveReq={(sig) => api.removeReqOverride(sig)}
-              onToggleBlock={(id) => api.toggleBlock(id)}
-              onRemoveBlock={(id) => api.removeBlock(id)}
-              onClearAll={async () => { await api.clearRespOverrides(); await api.clearReqOverrides() }}
-              onClearBlocks={() => api.clearBlocks()}
-              onAddBlock={() => setDialog({ type: 'block', data: { flow: null, kind: 'host' } })}
-              onToggleBypass={(id) => api.toggleBypass(id)}
-              onRemoveBypass={(id) => api.removeBypass(id)}
-              onAddBypass={(pattern, label, kind) => api.addBypass(pattern, label, kind)}
-              onClearBypass={() => api.clearBypass()}
-              onEditResp={editRespOverride}
-              onEditReq={editReqOverride}
-              onEditBlock={(id, data) => api.updateBlock(id, data)}
-              onEditBypass={(id, data) => api.updateBypass(id, data)}
-              settings={state.settings}
-              onUpdateSettings={api.updateSettings}
+          {leftTab === 'raw' && (
+            <PacketDetail
+              packet={packets.find(p => p.no === selectedPacketNo) ?? null}
             />
           )}
         </div>
@@ -439,12 +700,13 @@ export default function App() {
         <BlockDialog
           initialKind={dialog.data.kind}
           initialValue={
-            dialog.data.kind === 'host' ? (dialog.data.flow?.host ?? '') :
-            dialog.data.kind === 'url'  ? (dialog.data.flow?.url ?? '') :
-            dialog.data.kind === 'process' ? (dialog.data.flow?.process_name ?? '') : ''
+            dialog.data.kind === 'host'    ? (dialog.data.flow?.host ?? '') :
+            dialog.data.kind === 'url'     ? (dialog.data.flow?.url ?? '') :
+            dialog.data.kind === 'process' ? (dialog.data.flow?.process_name ?? '') :
+            dialog.data.kind === 'ip'      ? (dialog.data.flow?.host ?? '') : ''
           }
-          onSave={async (kind, value) => {
-            await api.addBlock(kind, value)
+          onSave={async (kind, value, responseType, bodyB64) => {
+            await api.addBlock(kind, value, responseType, bodyB64)
             setDialog(null)
           }}
           onClose={() => setDialog(null)}
@@ -459,6 +721,59 @@ export default function App() {
             setDialog(null)
           }}
           onClose={() => setDialog(null)}
+        />
+      )}
+
+      {showRules && (
+        <div className="dialog-overlay" onClick={() => setShowRules(false)}>
+          <div
+            className="dialog"
+            style={{ width: 920, maxWidth: '95vw', height: '80vh', padding: 0, gap: 0, display: 'flex', flexDirection: 'column' }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 16px', borderBottom: '1px solid var(--border)', flexShrink: 0 }}>
+              <span style={{ fontWeight: 700, fontSize: 13 }}>Rules</span>
+              <button className="btn btn--icon" onClick={() => setShowRules(false)}>✕</button>
+            </div>
+            <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
+              <RulesPanel
+                respOverrides={state.respOverrides}
+                reqOverrides={state.reqOverrides}
+                blocks={state.blocks}
+                bypass={state.bypass}
+                onToggleResp={(sig) => api.toggleRespOverride(sig)}
+                onRemoveResp={(sig) => api.removeRespOverride(sig)}
+                onToggleReq={(sig) => api.toggleReqOverride(sig)}
+                onRemoveReq={(sig) => api.removeReqOverride(sig)}
+                onToggleBlock={(id) => api.toggleBlock(id)}
+                onRemoveBlock={(id) => api.removeBlock(id)}
+                onClearAll={async () => { await api.clearRespOverrides(); await api.clearReqOverrides() }}
+                onClearBlocks={() => api.clearBlocks()}
+                onAddBlock={() => { setShowRules(false); setDialog({ type: 'block', data: { flow: null, kind: 'host' } }) }}
+                onToggleBypass={(id) => api.toggleBypass(id)}
+                onRemoveBypass={(id) => api.removeBypass(id)}
+                onAddBypass={(pattern, label, kind) => api.addBypass(pattern, label, kind)}
+                onClearBypass={() => api.clearBypass()}
+                onEditResp={editRespOverride}
+                onEditReq={editReqOverride}
+                onEditBlock={(id, data) => api.updateBlock(id, data)}
+                onEditBypass={(id, data) => api.updateBypass(id, data)}
+                settings={state.settings}
+                onUpdateSettings={api.updateSettings}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showProxy && (
+        <ProxyConfigDialog
+          listenHost={state.settings.proxy_listen_host || '127.0.0.1'}
+          listenPort={state.settings.proxy_listen_port || 8080}
+          winProxy={winProxy}
+          onApply={applyProxy}
+          onClose={() => setShowProxy(false)}
+          onOpen={() => api.getWinProxy().then(setWinProxy).catch(() => {})}
         />
       )}
 
@@ -492,6 +807,7 @@ export default function App() {
           onReqOverride={() => { openReqOverride(ctxMenu.flow); closeCtxMenu() }}
           onBlockHost={() => { openBlock(ctxMenu.flow, 'host'); closeCtxMenu() }}
           onBlockUrl={() => { openBlock(ctxMenu.flow, 'url'); closeCtxMenu() }}
+          onBlockIp={() => { openBlock(ctxMenu.flow, 'ip'); closeCtxMenu() }}
           onCopyUrl={() => {
             navigator.clipboard.writeText(ctxMenu.flow?.url ?? '')
             closeCtxMenu()

@@ -4,3 +4,5 @@ client/resources/pepe-service.exe
 /service/dist
 /client/dist-electron
 /client/dist
+/.claude
+/service/__pycache__

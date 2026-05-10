@@ -139,10 +139,11 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/api/status")
 def get_status():
-    from proxy import LISTEN_HOST, LISTEN_PORT
+    host = state.settings_store.get("proxy_listen_host", "127.0.0.1")
+    port = state.settings_store.get("proxy_listen_port", 8080)
     return {
         "status": "running",
-        "proxy": f"{LISTEN_HOST}:{LISTEN_PORT}",
+        "proxy": f"{host}:{port}",
         "flows": len(state.flow_store.all()),
     }
 
@@ -398,6 +399,8 @@ def clear_req_overrides():
 class BlockPayload(BaseModel):
     kind: str
     value: str
+    response_type: str = "block"
+    response_body_b64: str = ""
 
 
 class BlockIdPayload(BaseModel):
@@ -411,7 +414,10 @@ def get_blocks():
 
 @app.post("/api/rules/blocks")
 def add_block(payload: BlockPayload):
-    rule = state.block_store.add(payload.kind, payload.value)
+    rule = state.block_store.add(
+        payload.kind, payload.value,
+        payload.response_type, payload.response_body_b64,
+    )
     _broadcast_rules()
     return {"ok": True, "rule": rule}
 
@@ -442,11 +448,16 @@ class UpdateBlockPayload(BaseModel):
     kind: Optional[str] = None
     value: Optional[str] = None
     enabled: Optional[bool] = None
+    response_type: Optional[str] = None
+    response_body_b64: Optional[str] = None
 
 
 @app.post("/api/rules/blocks/update")
 def update_block(payload: UpdateBlockPayload):
-    state.block_store.update(payload.id, kind=payload.kind, value=payload.value, enabled=payload.enabled)
+    state.block_store.update(
+        payload.id, kind=payload.kind, value=payload.value, enabled=payload.enabled,
+        response_type=payload.response_type, response_body_b64=payload.response_body_b64,
+    )
     _broadcast_rules()
     return {"ok": True}
 
@@ -549,6 +560,8 @@ class SettingsPayload(BaseModel):
     amqp_listen_port: Optional[int] = None
     amqp_upstream_host: Optional[str] = None
     amqp_upstream_port: Optional[int] = None
+    proxy_listen_host: Optional[str] = None
+    proxy_listen_port: Optional[int] = None
 
 
 @app.get("/api/settings")
@@ -571,6 +584,17 @@ def update_settings(payload: SettingsPayload):
     if payload.amqp_capture_enabled is not None:
         state.settings_store.set("amqp_capture_enabled", payload.amqp_capture_enabled)
 
+    old_host = state.settings_store.get("proxy_listen_host", "127.0.0.1")
+    old_port = int(state.settings_store.get("proxy_listen_port", 8080))
+    if payload.proxy_listen_host is not None:
+        state.settings_store.set("proxy_listen_host", payload.proxy_listen_host)
+    if payload.proxy_listen_port is not None:
+        state.settings_store.set("proxy_listen_port", int(payload.proxy_listen_port))
+    new_host = state.settings_store.get("proxy_listen_host", "127.0.0.1")
+    new_port = int(state.settings_store.get("proxy_listen_port", 8080))
+    if (old_host != new_host or old_port != new_port) and state.proxy_runner:
+        threading.Thread(target=state.proxy_runner.restart, daemon=True, name="pepe-proxy-restart").start()
+
     result = state.settings_store.all()
     amqp_touched = any(v is not None for v in [
         payload.amqp_capture_enabled, payload.amqp_listen_port,
@@ -591,6 +615,71 @@ def update_settings(payload: SettingsPayload):
 
     _broadcast_settings()
     return result
+
+
+# ── Windows proxy ─────────────────────────────────────────────────────────────
+
+@app.get("/api/proxy/win-proxy")
+def api_get_win_proxy():
+    try:
+        from win_proxy import get_proxy_state
+        return get_proxy_state()
+    except Exception as e:
+        return {"ok": False, "enabled": False, "server": "", "error": str(e)}
+
+
+class WinProxyPayload(BaseModel):
+    enabled: bool
+    server: str = "127.0.0.1:8080"
+
+
+@app.post("/api/proxy/win-proxy")
+def api_set_win_proxy(payload: WinProxyPayload):
+    try:
+        from win_proxy import set_proxy_state
+        return set_proxy_state(payload.enabled, payload.server)
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+# ── Packet capture ────────────────────────────────────────────────────────────
+
+class CaptureStartPayload(BaseModel):
+    iface: Optional[str] = None
+    filter: str = ""
+
+
+@app.get("/api/capture/interfaces")
+def get_capture_interfaces():
+    try:
+        return {"interfaces": state.packet_runner.list_interfaces()}
+    except RuntimeError as e:
+        return {"error": str(e), "interfaces": []}
+
+
+@app.post("/api/capture/start")
+def start_capture(payload: CaptureStartPayload):
+    err = state.packet_runner.start(payload.iface, payload.filter)
+    return {"ok": err is None, "error": err}
+
+
+@app.post("/api/capture/stop")
+def stop_capture():
+    state.packet_runner.stop()
+    return {"ok": True}
+
+
+@app.get("/api/capture/status")
+def get_capture_status():
+    return {"running": state.packet_runner.is_running()}
+
+
+@app.get("/api/capture/packet/{no}/hex")
+def get_packet_hex(no: int):
+    hex_str = state.packet_runner.get_hex(no)
+    if hex_str is None:
+        raise HTTPException(404, "Packet not found")
+    return {"hex": hex_str}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

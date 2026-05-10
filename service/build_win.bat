@@ -10,5 +10,6 @@ if errorlevel 1 (
 echo.
 echo Done. Output: dist\pepe-service.exe
 echo.
-echo Copy dist\pepe-service.exe to pepe\client\resources\ before building Electron app.
-pause
+:: echo Copy dist\pepe-service.exe to pepe\client\resources\ before building Electron app.
+copy /y dist\pepe-service.exe ..\client\resources
+::pause

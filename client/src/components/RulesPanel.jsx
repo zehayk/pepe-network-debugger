@@ -154,12 +154,14 @@ const KIND_BADGE_STYLE = {
   host:    { color: 'var(--accent)',   background: 'color-mix(in srgb, var(--accent) 12%, transparent)' },
   process: { color: 'var(--success)',  background: 'color-mix(in srgb, var(--success) 12%, transparent)' },
   address: { color: 'var(--warn)',     background: 'color-mix(in srgb, var(--warn) 12%, transparent)' },
+  url:     { color: 'var(--error)',    background: 'color-mix(in srgb, var(--error) 12%, transparent)' },
 }
 
 const KIND_PLACEHOLDERS = {
   host:    'regex, e.g. (.*\\.)?example\\.com',
   process: 'e.g. discord.exe',
   address: 'e.g. api.example.com',
+  url:     'e.g. /api/v1/users',
 }
 
 function KindBadge({ kind }) {
@@ -263,6 +265,7 @@ function BypassTable({ rules, onToggle, onRemove, onAdd, onClear, onEdit, settin
             <option value="host">host</option>
             <option value="process">process</option>
             <option value="address">address</option>
+            <option value="url">url</option>
           </select>
           <input
             className="dialog__input"
@@ -289,7 +292,7 @@ function BypassTable({ rules, onToggle, onRemove, onAdd, onClear, onEdit, settin
         <p style={{ fontSize: 11, color: 'var(--muted)', lineHeight: 1.5 }}>
           <ShieldOff size={11} style={{ display: 'inline', marginRight: 4, verticalAlign: 'middle' }} />
           <strong>host</strong> rules bypass SSL interception.{' '}
-          <strong>process</strong> &amp; <strong>address</strong> rules filter displayed traffic (or target in target mode).
+          <strong>process</strong>, <strong>address</strong> &amp; <strong>url</strong> rules filter displayed traffic (or target in target mode).
         </p>
       </div>
     </div>

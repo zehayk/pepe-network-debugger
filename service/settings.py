@@ -13,6 +13,8 @@ class SettingsStore:
         "amqp_listen_port": 5673,
         "amqp_upstream_host": "localhost",
         "amqp_upstream_port": 5672,
+        "proxy_listen_host": "127.0.0.1",
+        "proxy_listen_port": 8080,
     }
 
     def __init__(self):

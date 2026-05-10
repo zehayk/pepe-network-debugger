@@ -5,12 +5,14 @@ const KIND_LABELS = {
   host:    'Host regex (SSL bypass)',
   process: 'Process name',
   address: 'Address / host substring',
+  url:     'URL substring',
 }
 
 const KIND_PLACEHOLDERS = {
   host:    'e.g. (.*\\.)?example\\.com',
   process: 'e.g. discord.exe',
   address: 'e.g. api.example.com',
+  url:     'e.g. /api/v1/users',
 }
 
 export default function EditBypassDialog({ rule, onSave, onClose }) {
@@ -35,6 +37,7 @@ export default function EditBypassDialog({ rule, onSave, onClose }) {
             <option value="host">Host (SSL bypass + filter)</option>
             <option value="process">Process name</option>
             <option value="address">Address / host</option>
+            <option value="url">URL substring</option>
           </select>
         </div>
 

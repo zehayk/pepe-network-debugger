@@ -15,7 +15,8 @@ except ImportError:
 
 _PROCESS_CACHE: Dict[Tuple[str, int], str] = {}
 _PROCESS_CACHE_LOCK = threading.Lock()
-_PROCESS_LOOKUP_DENIED = False
+_PROCESS_LOOKUP_DENIED_UNTIL: float = 0.0
+_LOOKUP_DENY_COOLDOWN = 30.0
 _SNAPSHOT: Dict[Tuple[str, int], int] = {}
 _SNAPSHOT_TS: float = 0.0
 _SNAPSHOT_TTL = 0.5
@@ -40,8 +41,10 @@ def _parse_client_address(client_address: Any) -> Optional[Tuple[str, int]]:
 
 
 def _refresh_snapshot() -> bool:
-    global _SNAPSHOT, _SNAPSHOT_TS, _PROCESS_LOOKUP_DENIED
-    if not PSUTIL_AVAILABLE or _PROCESS_LOOKUP_DENIED:
+    global _SNAPSHOT, _SNAPSHOT_TS, _PROCESS_LOOKUP_DENIED_UNTIL
+    if not PSUTIL_AVAILABLE:
+        return False
+    if time.time() < _PROCESS_LOOKUP_DENIED_UNTIL:
         return False
     new_snap: Dict[Tuple[str, int], int] = {}
     try:
@@ -51,7 +54,7 @@ def _refresh_snapshot() -> bool:
                 continue
             new_snap[(laddr.ip, laddr.port)] = conn.pid
     except (psutil.AccessDenied, PermissionError, OSError):
-        _PROCESS_LOOKUP_DENIED = True
+        _PROCESS_LOOKUP_DENIED_UNTIL = time.time() + _LOOKUP_DENY_COOLDOWN
         return False
     except Exception:
         return False
@@ -62,7 +65,7 @@ def _refresh_snapshot() -> bool:
 
 
 def lookup_process_name(client_address: Any) -> str:
-    if not PSUTIL_AVAILABLE or _PROCESS_LOOKUP_DENIED:
+    if not PSUTIL_AVAILABLE or time.time() < _PROCESS_LOOKUP_DENIED_UNTIL:
         return ""
     addr = _parse_client_address(client_address)
     if not addr:

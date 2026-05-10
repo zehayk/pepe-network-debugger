@@ -1,4 +1,5 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { Trash2 } from 'lucide-react'
 
 function methodClass(m) {
   const map = { GET: 'GET', POST: 'POST', PUT: 'PUT', DELETE: 'DELETE', PATCH: 'PATCH' }
@@ -27,59 +28,146 @@ function rowClass(flow, selectedId) {
   return parts.join(' ')
 }
 
-function hasSigMatch(flow, overrides) {
-  return overrides.some(r =>
-    r.sig &&
-    r.sig[0] === flow.method &&
-    r.sig[1] === flow.scheme &&
-    r.sig[2] === flow.host &&
-    r.sig[3] === (flow.port ?? 80) &&
-    r.sig[4] === flow.path
-  )
-}
+// Default column widths — matches previous fixed widths; path gets remaining space
+const DEFAULT_WIDTHS = [76, 62, 56, 160, 150, 50, 100]
+const COL_MIN = 30
+const ROW_H = 28
+const OVERSCAN = 5
 
 export default function FlowTable({
   flows, selectedId, onSelect, onContextMenu,
-  autoScroll, respOverrides, reqOverrides,
+  autoScroll, pauseEvents, onClear,
 }) {
   const scrollRef = useRef(null)
-  const tbodyRef = useRef(null)
+  const [colWidths, setColWidths] = useState(DEFAULT_WIDTHS)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [containerH, setContainerH] = useState(600)
 
-  // Auto-scroll to bottom when new flows arrive
+  const startResize = (e, idx) => {
+    e.preventDefault()
+    e.stopPropagation()
+    const startX = e.clientX
+    const startW = colWidths[idx]
+    const onMove = (ev) => {
+      const newW = Math.max(COL_MIN, startW + ev.clientX - startX)
+      setColWidths(w => { const n = [...w]; n[idx] = newW; return n })
+    }
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  // Build interleaved list of flow rows and pause-marker rows
+  const items = useMemo(() => {
+    if (!pauseEvents?.length) return flows
+    const pauses = pauseEvents
+      .filter(e => e.type === 'pause')
+      .sort((a, b) => a.at - b.at)
+    if (!pauses.length) return flows
+
+    const result = []
+    for (let i = 0; i < flows.length; i++) {
+      if (i > 0) {
+        const prevTs = flows[i - 1].time ? new Date(flows[i - 1].time).getTime() / 1000 : -Infinity
+        const curTs  = flows[i].time     ? new Date(flows[i].time).getTime()     / 1000 :  Infinity
+        for (const p of pauses) {
+          if (p.at > prevTs && p.at < curTs) {
+            result.push({ _pauseAt: p.at })
+          }
+        }
+      }
+      result.push(flows[i])
+    }
+    return result
+  }, [flows, pauseEvents])
+
+  // Track container height for virtual scroll
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el) return
+    setContainerH(el.clientHeight)
+    const ro = new ResizeObserver(() => setContainerH(el.clientHeight))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // When autoScroll turns on, snap to bottom immediately
   useEffect(() => {
     if (!autoScroll || !scrollRef.current) return
-    scrollRef.current.scrollTop = scrollRef.current.scrollHeight
-  }, [flows.length, autoScroll])
+    const el = scrollRef.current
+    el.scrollTop = el.scrollHeight
+    setScrollTop(el.scrollTop)
+  }, [autoScroll])
+
+  // When new items arrive and autoScroll is on, only scroll if already near bottom
+  useEffect(() => {
+    if (!autoScroll || !scrollRef.current) return
+    const el = scrollRef.current
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) {
+      el.scrollTop = el.scrollHeight
+      setScrollTop(el.scrollTop)
+    }
+  }, [items.length])
 
   const timeStr = (iso) => {
     if (!iso) return ''
     try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false }) } catch { return iso }
   }
 
+  const totalW = colWidths.reduce((s, w) => s + w, 0)
+
+  const effectiveScrollTop = scrollTop
+  const startIdx = Math.max(0, Math.floor(effectiveScrollTop / ROW_H) - OVERSCAN)
+  const endIdx = Math.min(items.length, Math.ceil((effectiveScrollTop + containerH) / ROW_H) + OVERSCAN)
+  const topPad = startIdx * ROW_H
+  const bottomPad = Math.max(0, (items.length - endIdx) * ROW_H)
+
+  const cols = ['Time', 'Method', 'Status', 'Host', 'Path', 'ms', 'Process']
+
   return (
     <div className="flow-table-wrap">
       <div className="section-header">
         <span>Traffic</span>
         <span className="section-header__count">{flows.length} flows</span>
+        {onClear && (
+          <button className="btn btn--icon section-header__clear" onClick={onClear} title="Clear HTTP flows">
+            <Trash2 size={12} />
+          </button>
+        )}
       </div>
-      <div className="flow-scroll" ref={scrollRef}>
-        <table className="flow-table">
+      <div className="flow-scroll" ref={scrollRef} onScroll={e => setScrollTop(e.currentTarget.scrollTop)}>
+        <table className="flow-table" style={{ width: totalW, minWidth: '100%' }}>
+          <colgroup>
+            {colWidths.map((w, i) => <col key={i} style={{ width: w }} />)}
+          </colgroup>
           <thead>
             <tr>
-              <th style={{ width: 76 }}>Time</th>
-              <th style={{ width: 62 }}>Method</th>
-              <th style={{ width: 56 }}>Status</th>
-              <th style={{ width: 160 }}>Host</th>
-              <th>Path</th>
-              <th style={{ width: 50 }}>ms</th>
-              <th style={{ width: 100 }}>Process</th>
-              <th style={{ width: 48 }}>Tags</th>
+              {cols.map((label, i) => (
+                <th key={label}>
+                  {label}
+                  {i < cols.length - 1 && (
+                    <div className="col-resize-handle" onMouseDown={e => startResize(e, i)} />
+                  )}
+                </th>
+              ))}
             </tr>
           </thead>
-          <tbody ref={tbodyRef}>
-            {flows.map(flow => {
-              const hasRespOv = hasSigMatch(flow, respOverrides)
-              const hasReqOv = hasSigMatch(flow, reqOverrides)
+          <tbody>
+            {topPad > 0 && <tr key="pad-top"><td colSpan={7} style={{ height: topPad, padding: 0, border: 'none' }} /></tr>}
+            {items.slice(startIdx, endIdx).map((item) => {
+              if (item._pauseAt !== undefined) {
+                return (
+                  <tr key={`pause-${item._pauseAt}`} className="flow-pause-row">
+                    <td colSpan={7}>
+                      Capture paused · {new Date(item._pauseAt * 1000).toLocaleTimeString('en-US', { hour12: false })}
+                    </td>
+                  </tr>
+                )
+              }
+              const flow = item
               return (
                 <tr
                   key={flow.id}
@@ -94,13 +182,10 @@ export default function FlowTable({
                   <td className="truncate mono" title={flow.path}>{flow.path}</td>
                   <td>{flow.duration_ms ?? ''}</td>
                   <td className="truncate muted" title={flow.process_name}>{flow.process_name}</td>
-                  <td>
-                    {flow.blocked && <span className="tag tag--blk">BLK</span>}
-                    {!flow.blocked && (hasRespOv || hasReqOv) && <span className="tag tag--ov">OV</span>}
-                  </td>
                 </tr>
               )
             })}
+            {bottomPad > 0 && <tr key="pad-bottom"><td colSpan={7} style={{ height: bottomPad, padding: 0, border: 'none' }} /></tr>}
           </tbody>
         </table>
         {flows.length === 0 && (

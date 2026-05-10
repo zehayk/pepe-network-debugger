@@ -81,7 +81,7 @@ class BypassStore:
         pattern = pattern.strip()
         if not pattern:
             raise ValueError("Pattern cannot be empty.")
-        if kind not in ("host", "process", "address"):
+        if kind not in ("host", "process", "address", "url"):
             kind = "host"
         with self._lock:
             rule = {
@@ -108,7 +108,7 @@ class BypassStore:
                             rule["pattern"] = pattern
                     if label is not None:
                         rule["label"] = label
-                    if kind is not None and kind in ("host", "process", "address"):
+                    if kind is not None and kind in ("host", "process", "address", "url"):
                         rule["kind"] = kind
                     if enabled is not None:
                         rule["enabled"] = enabled
@@ -301,20 +301,32 @@ class BlockStore:
     KIND_HOST = "host"
     KIND_URL = "url"
     KIND_PROCESS = "process"
+    KIND_IP = "ip"
+    VALID_RESPONSE_TYPES = ("block", "hang", "text", "html", "gif", "video")
 
     def __init__(self):
         self._lock = threading.Lock()
         self._rules: List[Dict[str, Any]] = []
         self._next_id = 1
 
-    def add(self, kind: str, value: str) -> Dict[str, Any]:
-        if kind not in (self.KIND_HOST, self.KIND_URL, self.KIND_PROCESS):
+    def add(self, kind: str, value: str,
+            response_type: str = "block", response_body_b64: str = "") -> Dict[str, Any]:
+        if kind not in (self.KIND_HOST, self.KIND_URL, self.KIND_PROCESS, self.KIND_IP):
             raise ValueError(f"Unknown block kind: {kind}")
         value = safe_str(value).strip()
         if not value:
             raise ValueError("Block value cannot be empty.")
+        if response_type not in self.VALID_RESPONSE_TYPES:
+            response_type = "block"
         with self._lock:
-            rule = {"id": self._next_id, "kind": kind, "value": value, "enabled": True}
+            rule = {
+                "id": self._next_id,
+                "kind": kind,
+                "value": value,
+                "enabled": True,
+                "response_type": response_type,
+                "response_body_b64": response_body_b64,
+            }
             self._next_id += 1
             self._rules.append(rule)
             return dict(rule)
@@ -331,8 +343,9 @@ class BlockStore:
                     break
 
     def update(self, rule_id: int, kind: str = None, value: str = None,
-               enabled: bool = None) -> bool:
-        if kind is not None and kind not in (self.KIND_HOST, self.KIND_URL, self.KIND_PROCESS):
+               enabled: bool = None, response_type: str = None,
+               response_body_b64: str = None) -> bool:
+        if kind is not None and kind not in (self.KIND_HOST, self.KIND_URL, self.KIND_PROCESS, self.KIND_IP):
             raise ValueError(f"Unknown block kind: {kind}")
         with self._lock:
             for rule in self._rules:
@@ -345,6 +358,10 @@ class BlockStore:
                             rule["value"] = v
                     if enabled is not None:
                         rule["enabled"] = enabled
+                    if response_type is not None and response_type in self.VALID_RESPONSE_TYPES:
+                        rule["response_type"] = response_type
+                    if response_body_b64 is not None:
+                        rule["response_body_b64"] = response_body_b64
                     return True
         return False
 
@@ -376,5 +393,8 @@ class BlockStore:
                         return dict(rule)
                 elif kind == self.KIND_PROCESS:
                     if proc_l and proc_l == value:
+                        return dict(rule)
+                elif kind == self.KIND_IP:
+                    if host_l == value:
                         return dict(rule)
         return None

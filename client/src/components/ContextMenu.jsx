@@ -5,7 +5,7 @@ export default function ContextMenu({
   x, y, flow,
   onReplay, onEditSend,
   onRespOverride, onReqOverride,
-  onBlockHost, onBlockUrl,
+  onBlockHost, onBlockUrl, onBlockIp,
   onCopyUrl, onCopyHost,
   onClose,
 }) {
@@ -35,6 +35,7 @@ export default function ContextMenu({
       <div className="ctx-menu__sep" />
       <div className="ctx-menu__item" onClick={onBlockHost}><Ban size={13} /> Block Host</div>
       <div className="ctx-menu__item" onClick={onBlockUrl}><Ban size={13} /> Block URL</div>
+      <div className="ctx-menu__item" onClick={onBlockIp}><Ban size={13} /> Block IP</div>
       <div className="ctx-menu__sep" />
       <div className="ctx-menu__item" onClick={onCopyUrl}><Copy size={13} /> Copy URL</div>
       <div className="ctx-menu__item" onClick={onCopyHost}><Copy size={13} /> Copy Host</div>

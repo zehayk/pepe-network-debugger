@@ -43,8 +43,8 @@ export const clearReqOverrides = () =>
   req('POST', '/api/rules/req-overrides/clear')
 
 // ── Block rules ───────────────────────────────────────────────────────────────
-export const addBlock = (kind, value) =>
-  req('POST', '/api/rules/blocks', { kind, value })
+export const addBlock = (kind, value, response_type = 'block', response_body_b64 = '') =>
+  req('POST', '/api/rules/blocks', { kind, value, response_type, response_body_b64 })
 export const removeBlock = (id) =>
   req('POST', '/api/rules/blocks/remove', { id })
 export const toggleBlock = (id) =>
@@ -71,6 +71,19 @@ export const updateBlock = (id, data) =>
 // ── Settings ──────────────────────────────────────────────────────────────────
 export const getSettings = () => req('GET', '/api/settings')
 export const updateSettings = (settings) => req('POST', '/api/settings', settings)
+
+// ── Windows proxy ─────────────────────────────────────────────────────────────
+export const getWinProxy = () => req('GET', '/api/proxy/win-proxy')
+export const setWinProxy = (enabled, server = '127.0.0.1:8080') =>
+  req('POST', '/api/proxy/win-proxy', { enabled, server })
+
+// ── Packet capture ────────────────────────────────────────────────────────────
+export const getInterfaces = () => req('GET', '/api/capture/interfaces')
+export const startCapture = (iface = null, filter = '') =>
+  req('POST', '/api/capture/start', { iface, filter })
+export const stopCapture = () => req('POST', '/api/capture/stop')
+export const getCaptureStatus = () => req('GET', '/api/capture/status')
+export const getPacketHex = (no) => req('GET', `/api/capture/packet/${no}/hex`)
 
 // ── Status ────────────────────────────────────────────────────────────────────
 export const getStatus = () => req('GET', '/api/status')
