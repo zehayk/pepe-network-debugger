@@ -1,5 +1,8 @@
 ![PEPE](https://raw.githubusercontent.com/zehayk/pepe-network-debugger/refs/heads/master/client/resources/pepe.ico)
 
+> [!WARNING]  
+> Must run as Admin for full functionality
+
 # Features
 - override request/response
 - replay requests (can modify before replaying)
