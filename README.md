@@ -1,5 +1,7 @@
 ![PEPE](https://raw.githubusercontent.com/zehayk/pepe-network-debugger/refs/heads/master/client/resources/pepe.ico)
 
+![views](https://abc.zehayk.dev/visitor-badge/pepe-net-dbg.svg)
+
 > [!WARNING]  
 > Must run as Admin for full functionality
 
